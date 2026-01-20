@@ -18,14 +18,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Javaのセットアップ (修正: version 21に変更)
+      # 2. Javaのセットアップ (LSPatchにはJava 21が必要)
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      # 3. 更新チェック
+      # 3. Android SDKのセットアップ (署名ツールに必要)
+      # エラー "Cannot find Android build tools" への対策
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android Build Tools
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "build-tools;34.0.0" "platform-tools"
+
+      # 4. 更新チェック
       - name: Check for updates
         id: check
         env:
@@ -56,7 +66,7 @@ jobs:
             echo "upstream_repo=$UPSTREAM_REPO" >> $GITHUB_OUTPUT
           fi
 
-      # 4. Instafel APKのダウンロード (Clone版の特定)
+      # 5. Instafel APKのダウンロード (Clone版の特定)
       - name: Download Instafel APK
         if: steps.check.outputs.update_needed == 'true'
         env:
@@ -88,7 +98,7 @@ jobs:
           
           ls -lh instafel.apk
 
-      # 5. LSPatch (JingMatrix版) のダウンロード
+      # 6. LSPatch (JingMatrix版) のダウンロード
       - name: Download LSPatch (JingMatrix)
         if: steps.check.outputs.update_needed == 'true'
         env:
@@ -101,7 +111,7 @@ jobs:
           
           echo "LSPatch version: $LATEST_LSPATCH_TAG"
 
-      # 6. パッチ適用 (ローカル適応モード)
+      # 7. パッチ適用 (ローカル適応モード)
       - name: Apply LSPatch (Local Mode)
         if: steps.check.outputs.update_needed == 'true'
         run: |
@@ -113,7 +123,8 @@ jobs:
           # ファイル名整理
           mv output/*.apk output/instafel-patched.apk
 
-      # 7. 署名 (Keystore必須)
+      # 8. 署名 (Keystore必須)
+      # Android SDKとBuild Toolsがセットアップされた環境で実行
       - name: Sign APK
         if: steps.check.outputs.update_needed == 'true'
         uses: ilharp/sign-android-release@v1
@@ -124,7 +135,7 @@ jobs:
           keyStorePassword: ${{ secrets.STORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
 
-      # 8. リリース作成
+      # 9. リリース作成
       - name: Create Release
         if: steps.check.outputs.update_needed == 'true'
         env:
