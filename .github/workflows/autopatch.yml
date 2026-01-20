@@ -25,8 +25,7 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      # 3. Android SDKのセットアップ (署名ツールに必要)
-      # エラー "Cannot find Android build tools" への対策
+      # 3. Android SDKのセットアップ
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
@@ -76,15 +75,12 @@ jobs:
         run: |
           echo "Fetching asset list for $TAG_NAME..."
           
-          # APKファイル名のリストを取得
           ASSET_LIST=$(gh release view "$TAG_NAME" --repo "$UPSTREAM_REPO" --json assets --jq '.assets[].name | select(endswith(".apk"))')
           echo "Found assets:"
           echo "$ASSET_LIST"
           
-          # Clone版 ('instafel_c_') を検索して抽出
           TARGET_FILE=$(echo "$ASSET_LIST" | grep "instafel_c_" | head -n 1)
           
-          # もしClone版が見つからない場合
           if [ -z "$TARGET_FILE" ]; then
             echo "Warning: Clone version (instafel_c_) not explicitly found."
             echo "Falling back to the first available apk."
@@ -93,9 +89,7 @@ jobs:
           
           echo "Selected target file: $TARGET_FILE"
           
-          # 特定したファイル名を使ってダウンロードし、instafel.apk にリネーム
           gh release download "$TAG_NAME" --repo "$UPSTREAM_REPO" --pattern "$TARGET_FILE" --output "instafel.apk" --clobber
-          
           ls -lh instafel.apk
 
       # 6. LSPatch (JingMatrix版) のダウンロード
@@ -116,24 +110,43 @@ jobs:
         if: steps.check.outputs.update_needed == 'true'
         run: |
           mkdir -p output
-          
-          # パッチ適用実行
           java -jar lspatch.jar instafel.apk -d -f -o output
-          
-          # ファイル名整理
-          mv output/*.apk output/instafel-patched.apk
+          # パッチ適用後のファイルを一時的な名前に変更
+          mv output/*.apk output/instafel-patched-unsigned.apk
 
-      # 8. 署名 (Keystore必須)
-      # Android SDKとBuild Toolsがセットアップされた環境で実行
-      - name: Sign APK
+      # 8. 署名 (apksignerを直接使用)
+      # エラーが出ていたアクションを使わず、コマンドで直接署名します
+      - name: Sign APK (Manual)
         if: steps.check.outputs.update_needed == 'true'
-        uses: ilharp/sign-android-release@v1
-        with:
-          releaseDir: output
-          signingKey: ${{ secrets.KEYSTORE_BASE64 }}
-          keyAlias: ${{ secrets.KEY_ALIAS }}
-          keyStorePassword: ${{ secrets.STORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          BUILD_TOOLS_VERSION: "34.0.0"
+        run: |
+          # ツールパスの設定
+          BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
+          
+          # Keystoreをファイルに復元
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          
+          # Zipalign (最適化)
+          echo "Running zipalign..."
+          "$BUILD_TOOLS_PATH/zipalign" -v -p 4 output/instafel-patched-unsigned.apk output/instafel-aligned.apk
+          
+          # 署名実行 (apksigner)
+          echo "Running apksigner..."
+          "$BUILD_TOOLS_PATH/apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$STORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out output/instafel-patched.apk \
+            output/instafel-aligned.apk
+            
+          # クリーンアップ
+          rm release.keystore
 
       # 9. リリース作成
       - name: Create Release
