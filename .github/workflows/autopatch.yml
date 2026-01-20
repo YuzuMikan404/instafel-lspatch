@@ -18,14 +18,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Javaのセットアップ (LSPatchにはJava 21が必要)
+      # 2. Javaのセットアップ (LSPatchにはJava 21推奨)
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      # 3. Android SDKのセットアップ
+      # 3. Android SDKのセットアップ (署名・最適化ツール用)
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
@@ -34,12 +34,11 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "build-tools;34.0.0" "platform-tools"
 
-      # 4. 更新チェック
+      # 4. Instafelの更新チェック
       - name: Check for updates
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Instafelの配布リポジトリ
           UPSTREAM_REPO: "mamiiblt/instafel"
         run: |
           # 最新のInstafelのタグを取得
@@ -79,6 +78,7 @@ jobs:
           echo "Found assets:"
           echo "$ASSET_LIST"
           
+          # Clone版 ('instafel_c_') を検索して抽出
           TARGET_FILE=$(echo "$ASSET_LIST" | grep "instafel_c_" | head -n 1)
           
           if [ -z "$TARGET_FILE" ]; then
@@ -93,29 +93,42 @@ jobs:
           ls -lh instafel.apk
 
       # 6. LSPatch (JingMatrix版) のダウンロード
+      # 修正: Local Modeにするために manager.apk もダウンロードします
       - name: Download LSPatch (JingMatrix)
         if: steps.check.outputs.update_needed == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LSPATCH_REPO: "JingMatrix/LSPatch"
         run: |
-          echo "Downloading latest LSPatch from $LSPATCH_REPO..."
+          echo "Downloading latest LSPatch resources from $LSPATCH_REPO..."
           LATEST_LSPATCH_TAG=$(gh release list --repo $LSPATCH_REPO --limit 1 --json tagName --jq '.[0].tagName')
+          
+          # パッチャー本体
           gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.jar" --output "lspatch.jar" --clobber
           
+          # Managerアプリ (Local Modeの署名検証に必須)
+          # 注意: releaseによって名前が違う可能性がありますが、通常は manager.apk や *.apk です
+          # ここでは確実に manager.apk として保存するために、最初に見つかったapkをmanagerとして扱います
+          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.apk" --output "manager.apk" --clobber
+          
           echo "LSPatch version: $LATEST_LSPATCH_TAG"
+          ls -lh lspatch.jar manager.apk
 
-      # 7. パッチ適用 (ローカル適応モード)
+      # 7. パッチ適用 (Local Mode / Manager Mode 強制)
+      # 修正: --manager オプションを使ってManager APKを指定することで、Local Modeとしてビルドさせます
+      # -d (debug) は不安定な場合があるため削除しました
       - name: Apply LSPatch (Local Mode)
         if: steps.check.outputs.update_needed == 'true'
         run: |
           mkdir -p output
-          java -jar lspatch.jar instafel.apk -d -f -o output
-          # パッチ適用後のファイルを一時的な名前に変更
+          
+          echo "Applying patch in Local Mode..."
+          java -jar lspatch.jar instafel.apk --manager manager.apk -f -o output
+          
+          # 出力ファイル移動
           mv output/*.apk output/instafel-patched-unsigned.apk
 
-      # 8. 署名 (apksignerを直接使用)
-      # エラーが出ていたアクションを使わず、コマンドで直接署名します
+      # 8. 署名 (apksigner 直接実行 + zipalign最適化)
       - name: Sign APK (Manual)
         if: steps.check.outputs.update_needed == 'true'
         env:
@@ -125,17 +138,16 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           BUILD_TOOLS_VERSION: "34.0.0"
         run: |
-          # ツールパスの設定
           BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
           
-          # Keystoreをファイルに復元
+          # Keystore復元
           echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
           
-          # Zipalign (最適化)
+          # Zipalign (最適化: クラッシュ防止に重要)
           echo "Running zipalign..."
           "$BUILD_TOOLS_PATH/zipalign" -v -p 4 output/instafel-patched-unsigned.apk output/instafel-aligned.apk
           
-          # 署名実行 (apksigner)
+          # 署名実行
           echo "Running apksigner..."
           "$BUILD_TOOLS_PATH/apksigner" sign \
             --ks release.keystore \
@@ -145,7 +157,6 @@ jobs:
             --out output/instafel-patched.apk \
             output/instafel-aligned.apk
             
-          # クリーンアップ
           rm release.keystore
 
       # 9. リリース作成
@@ -157,4 +168,4 @@ jobs:
           gh release create "${{ steps.check.outputs.tag_name }}" \
             output/instafel-patched.apk \
             --title "Instafel Patched ${{ steps.check.outputs.tag_name }}" \
-            --notes "Base: Instafel Clone (c) ${{ steps.check.outputs.tag_name }}<br>LSPatch: JingMatrix Version (Local Mode)"
+            --notes "Base: Instafel Clone (c) ${{ steps.check.outputs.tag_name }}<br>LSPatch: JingMatrix (Local Mode/Manager Linked)"
