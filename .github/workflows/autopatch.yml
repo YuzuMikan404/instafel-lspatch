@@ -18,12 +18,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Javaのセットアップ
+      # 2. Javaのセットアップ (修正: version 21に変更)
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       # 3. 更新チェック
       - name: Check for updates
@@ -56,8 +56,7 @@ jobs:
             echo "upstream_repo=$UPSTREAM_REPO" >> $GITHUB_OUTPUT
           fi
 
-      # 4. Instafel APKのダウンロード (修正箇所: Clone版の特定)
-      # "instafel_c_" を含むファイル(Clone版)を特定してダウンロードします
+      # 4. Instafel APKのダウンロード (Clone版の特定)
       - name: Download Instafel APK
         if: steps.check.outputs.update_needed == 'true'
         env:
@@ -73,10 +72,9 @@ jobs:
           echo "$ASSET_LIST"
           
           # Clone版 ('instafel_c_') を検索して抽出
-          # grep で 'instafel_c_' を含む行を探し、head -n 1 で最初の1つに絞る
           TARGET_FILE=$(echo "$ASSET_LIST" | grep "instafel_c_" | head -n 1)
           
-          # もしClone版が見つからない場合 (命名規則変更などの保険)
+          # もしClone版が見つからない場合
           if [ -z "$TARGET_FILE" ]; then
             echo "Warning: Clone version (instafel_c_) not explicitly found."
             echo "Falling back to the first available apk."
