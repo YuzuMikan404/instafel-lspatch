@@ -78,6 +78,7 @@ jobs:
           echo "Found assets:"
           echo "$ASSET_LIST"
           
+          # Clone版 ('instafel_c_') を検索して抽出
           TARGET_FILE=$(echo "$ASSET_LIST" | grep "instafel_c_" | head -n 1)
           
           if [ -z "$TARGET_FILE" ]; then
@@ -102,26 +103,34 @@ jobs:
           LATEST_LSPATCH_TAG=$(gh release list --repo $LSPATCH_REPO --limit 1 --json tagName --jq '.[0].tagName')
           
           gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.jar" --output "lspatch.jar" --clobber
-          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.apk" --output "manager.apk" --clobber
+          
+          # Manager APK (Local Modeに必須)
+          # *.apk でダウンロードし、manager.apk にリネームして保存
+          # 確実に1つのファイルにするため、findコマンド等で処理
+          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.apk" --output "manager_dl.apk" --clobber
+          mv manager_dl.apk manager.apk
           
           echo "LSPatch version: $LATEST_LSPATCH_TAG"
           ls -lh lspatch.jar manager.apk
 
-      # 7. パッチ適用 (Local Mode / Manager Mode 強制)
-      # 修正: manager.apkも出力されるため、Instafelだけを特定してリネームします
+      # 7. パッチ適用 (Local Mode + 注入ローダーデックス)
+      # 修正: --injectdex オプションを追加
+      # 修正: 生成されたファイルの中から Instafel だけを特定してリネーム
       - name: Apply LSPatch (Local Mode)
         if: steps.check.outputs.update_needed == 'true'
         run: |
           mkdir -p output
           
-          echo "Applying patch in Local Mode..."
-          java -jar lspatch.jar instafel.apk --manager manager.apk -f -o output
+          echo "Applying patch in Local Mode with Inject Loader Dex..."
+          # --injectdex: 注入ローダーデックスを有効化 (Webviewクラッシュ対策)
+          # --manager: Local Mode (Manager連携) を強制
+          java -jar lspatch.jar instafel.apk --manager manager.apk --injectdex -f -o output
           
           echo "Files in output directory:"
           ls -lh output/
           
-          # Instafelのパッチ済みファイルのみをターゲットファイル名に変更
-          # instafel-***-lspatched.apk という形式のファイルを1つ見つけてリネーム
+          # Instafelのパッチ済みファイルのみを特定してリネーム
+          # (manager-xxx.apk も生成されるため、それを除外)
           mv output/instafel-*-lspatched.apk output/instafel-patched-unsigned.apk
 
       # 8. 署名 (apksignerを直接使用)
@@ -161,4 +170,4 @@ jobs:
           gh release create "${{ steps.check.outputs.tag_name }}" \
             output/instafel-patched.apk \
             --title "Instafel Patched ${{ steps.check.outputs.tag_name }}" \
-            --notes "Base: Instafel Clone (c) ${{ steps.check.outputs.tag_name }}<br>LSPatch: JingMatrix (Local Mode/Manager Linked)"
+            --notes "Base: Instafel Clone (c) ${{ steps.check.outputs.tag_name }}<br>LSPatch: JingMatrix (Local Mode + Inject Dex)"
