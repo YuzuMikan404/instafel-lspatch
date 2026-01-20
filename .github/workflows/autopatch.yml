@@ -1,0 +1,124 @@
+name: Auto Patch Instafel (Local Mode)
+
+on:
+  schedule:
+    # 毎日 日本時間 午前4時 (UTC 19:00) にチェック
+    - cron: '0 19 * * *'
+  workflow_dispatch: # 手動実行用
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-patch:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. リポジトリのチェックアウト
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Javaのセットアップ
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 3. 更新チェック
+      - name: Check for updates
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Instafelの配布リポジトリ (リリースがある場所を指定)
+          # 注意: Instafelはアーキテクチャ別にリポジトリが分かれている場合があります。
+          # 必要に応じて "mamiiblt/instafel_release_arm64-v8a" などに変更してください。
+          UPSTREAM_REPO: "mamiiblt/instafel"
+        run: |
+          # 最新のInstafelのタグを取得
+          LATEST_TAG=$(gh release list --repo $UPSTREAM_REPO --limit 1 --json tagName --jq '.[0].tagName')
+          echo "Upstream version: $LATEST_TAG"
+
+          # 自分のリポジトリの最新リリースを取得
+          CURRENT_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || echo "")
+          echo "Current local version: $CURRENT_TAG"
+
+          if [ -z "$LATEST_TAG" ]; then
+             echo "Error: Could not find upstream release."
+             exit 1
+          fi
+
+          if [ "$LATEST_TAG" == "$CURRENT_TAG" ]; then
+            echo "Already up to date."
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version found!"
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "tag_name=$LATEST_TAG" >> $GITHUB_OUTPUT
+            echo "upstream_repo=$UPSTREAM_REPO" >> $GITHUB_OUTPUT
+          fi
+
+      # 4. Instafel APKのダウンロード
+      - name: Download Instafel APK
+        if: steps.check.outputs.update_needed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REPO: ${{ steps.check.outputs.upstream_repo }}
+          TAG_NAME: ${{ steps.check.outputs.tag_name }}
+        run: |
+          # .apk で終わるファイルを1つ取得してダウンロード
+          gh release download "$TAG_NAME" --repo "$UPSTREAM_REPO" --pattern "*.apk" --output "instafel.apk" --clobber
+          ls -lh instafel.apk
+
+      # 5. LSPatch (JingMatrix版) のダウンロード
+      # ここで「都度ダウンロード」を行います
+      - name: Download LSPatch (JingMatrix)
+        if: steps.check.outputs.update_needed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 人マトリクス (JingMatrix) のリポジトリ
+          LSPATCH_REPO: "JingMatrix/LSPatch"
+        run: |
+          echo "Downloading latest LSPatch from $LSPATCH_REPO..."
+          # 最新リリースの jar ファイルをダウンロード
+          LATEST_LSPATCH_TAG=$(gh release list --repo $LSPATCH_REPO --limit 1 --json tagName --jq '.[0].tagName')
+          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.jar" --output "lspatch.jar" --clobber
+          
+          echo "LSPatch version: $LATEST_LSPATCH_TAG"
+          ls -lh lspatch.jar
+
+      # 6. パッチ適用 (ローカル適応モード)
+      # -m オプションを使わないことでモジュールを埋め込みません
+      - name: Apply LSPatch (Local Mode)
+        if: steps.check.outputs.update_needed == 'true'
+        run: |
+          mkdir -p output
+          
+          # パッチ適用実行
+          # -m (モジュール指定) を除外 = ローカル適応(Manager管理モード)
+          java -jar lspatch.jar instafel.apk -d -f -o output
+          
+          # ファイル名整理
+          mv output/*.apk output/instafel-patched.apk
+
+      # 7. 署名 (Keystore必須)
+      - name: Sign APK
+        if: steps.check.outputs.update_needed == 'true'
+        uses: ilharp/sign-android-release@v1
+        with:
+          releaseDir: output
+          signingKey: ${{ secrets.KEYSTORE_BASE64 }}
+          keyAlias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      # 8. リリース作成
+      - name: Create Release
+        if: steps.check.outputs.update_needed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.check.outputs.tag_name }}" \
+            output/instafel-patched.apk \
+            --title "Instafel Patched ${{ steps.check.outputs.tag_name }}" \
+            --notes "Base: Instafel ${{ steps.check.outputs.tag_name }}<br>LSPatch: JingMatrix Version (Local Mode)"
