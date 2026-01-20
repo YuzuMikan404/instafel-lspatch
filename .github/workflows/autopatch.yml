@@ -30,9 +30,7 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Instafelの配布リポジトリ (リリースがある場所を指定)
-          # 注意: Instafelはアーキテクチャ別にリポジトリが分かれている場合があります。
-          # 必要に応じて "mamiiblt/instafel_release_arm64-v8a" などに変更してください。
+          # Instafelの配布リポジトリ
           UPSTREAM_REPO: "mamiiblt/instafel"
         run: |
           # 最新のInstafelのタグを取得
@@ -58,7 +56,8 @@ jobs:
             echo "upstream_repo=$UPSTREAM_REPO" >> $GITHUB_OUTPUT
           fi
 
-      # 4. Instafel APKのダウンロード
+      # 4. Instafel APKのダウンロード (修正箇所: Clone版の特定)
+      # "instafel_c_" を含むファイル(Clone版)を特定してダウンロードします
       - name: Download Instafel APK
         if: steps.check.outputs.update_needed == 'true'
         env:
@@ -66,36 +65,51 @@ jobs:
           UPSTREAM_REPO: ${{ steps.check.outputs.upstream_repo }}
           TAG_NAME: ${{ steps.check.outputs.tag_name }}
         run: |
-          # .apk で終わるファイルを1つ取得してダウンロード
-          gh release download "$TAG_NAME" --repo "$UPSTREAM_REPO" --pattern "*.apk" --output "instafel.apk" --clobber
+          echo "Fetching asset list for $TAG_NAME..."
+          
+          # APKファイル名のリストを取得
+          ASSET_LIST=$(gh release view "$TAG_NAME" --repo "$UPSTREAM_REPO" --json assets --jq '.assets[].name | select(endswith(".apk"))')
+          echo "Found assets:"
+          echo "$ASSET_LIST"
+          
+          # Clone版 ('instafel_c_') を検索して抽出
+          # grep で 'instafel_c_' を含む行を探し、head -n 1 で最初の1つに絞る
+          TARGET_FILE=$(echo "$ASSET_LIST" | grep "instafel_c_" | head -n 1)
+          
+          # もしClone版が見つからない場合 (命名規則変更などの保険)
+          if [ -z "$TARGET_FILE" ]; then
+            echo "Warning: Clone version (instafel_c_) not explicitly found."
+            echo "Falling back to the first available apk."
+            TARGET_FILE=$(echo "$ASSET_LIST" | head -n 1)
+          fi
+          
+          echo "Selected target file: $TARGET_FILE"
+          
+          # 特定したファイル名を使ってダウンロードし、instafel.apk にリネーム
+          gh release download "$TAG_NAME" --repo "$UPSTREAM_REPO" --pattern "$TARGET_FILE" --output "instafel.apk" --clobber
+          
           ls -lh instafel.apk
 
       # 5. LSPatch (JingMatrix版) のダウンロード
-      # ここで「都度ダウンロード」を行います
       - name: Download LSPatch (JingMatrix)
         if: steps.check.outputs.update_needed == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 人マトリクス (JingMatrix) のリポジトリ
           LSPATCH_REPO: "JingMatrix/LSPatch"
         run: |
           echo "Downloading latest LSPatch from $LSPATCH_REPO..."
-          # 最新リリースの jar ファイルをダウンロード
           LATEST_LSPATCH_TAG=$(gh release list --repo $LSPATCH_REPO --limit 1 --json tagName --jq '.[0].tagName')
           gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.jar" --output "lspatch.jar" --clobber
           
           echo "LSPatch version: $LATEST_LSPATCH_TAG"
-          ls -lh lspatch.jar
 
       # 6. パッチ適用 (ローカル適応モード)
-      # -m オプションを使わないことでモジュールを埋め込みません
       - name: Apply LSPatch (Local Mode)
         if: steps.check.outputs.update_needed == 'true'
         run: |
           mkdir -p output
           
           # パッチ適用実行
-          # -m (モジュール指定) を除外 = ローカル適応(Manager管理モード)
           java -jar lspatch.jar instafel.apk -d -f -o output
           
           # ファイル名整理
@@ -121,4 +135,4 @@ jobs:
           gh release create "${{ steps.check.outputs.tag_name }}" \
             output/instafel-patched.apk \
             --title "Instafel Patched ${{ steps.check.outputs.tag_name }}" \
-            --notes "Base: Instafel ${{ steps.check.outputs.tag_name }}<br>LSPatch: JingMatrix Version (Local Mode)"
+            --notes "Base: Instafel Clone (c) ${{ steps.check.outputs.tag_name }}<br>LSPatch: JingMatrix Version (Local Mode)"
