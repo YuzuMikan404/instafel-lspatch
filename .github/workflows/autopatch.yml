@@ -42,7 +42,7 @@ jobs:
           UPSTREAM_REPO: "mamiiblt/instafel"
         run: |
           # 最新のInstafelのタグを取得
-          LATEST_TAG=$(gh release list --repo $UPSTREAM_REPO --limit 1 --json tagName --jq '.[0].tagName')
+          LATEST_TAG=$(gh release list --repo "$UPSTREAM_REPO" --limit 1 --json tagName --jq '.[0].tagName')
           echo "Upstream version: $LATEST_TAG"
 
           # 自分のリポジトリの最新リリースを取得
@@ -50,8 +50,8 @@ jobs:
           echo "Current local version: $CURRENT_TAG"
 
           if [ -z "$LATEST_TAG" ]; then
-             echo "Error: Could not find upstream release."
-             exit 1
+            echo "Error: Could not find upstream release."
+            exit 1
           fi
 
           if [ "$LATEST_TAG" == "$CURRENT_TAG" ]; then
@@ -73,22 +73,22 @@ jobs:
           TAG_NAME: ${{ steps.check.outputs.tag_name }}
         run: |
           echo "Fetching asset list for $TAG_NAME..."
-          
+
           ASSET_LIST=$(gh release view "$TAG_NAME" --repo "$UPSTREAM_REPO" --json assets --jq '.assets[].name | select(endswith(".apk"))')
           echo "Found assets:"
           echo "$ASSET_LIST"
-          
+
           # Clone版 ('instafel_c_') を検索して抽出
           TARGET_FILE=$(echo "$ASSET_LIST" | grep "instafel_c_" | head -n 1)
-          
+
           if [ -z "$TARGET_FILE" ]; then
             echo "Warning: Clone version (instafel_c_) not explicitly found."
             echo "Falling back to the first available apk."
             TARGET_FILE=$(echo "$ASSET_LIST" | head -n 1)
           fi
-          
+
           echo "Selected target file: $TARGET_FILE"
-          
+
           gh release download "$TAG_NAME" --repo "$UPSTREAM_REPO" --pattern "$TARGET_FILE" --output "instafel.apk" --clobber
           ls -lh instafel.apk
 
@@ -100,37 +100,63 @@ jobs:
           LSPATCH_REPO: "JingMatrix/LSPatch"
         run: |
           echo "Downloading latest LSPatch resources from $LSPATCH_REPO..."
-          LATEST_LSPATCH_TAG=$(gh release list --repo $LSPATCH_REPO --limit 1 --json tagName --jq '.[0].tagName')
-          
-          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.jar" --output "lspatch.jar" --clobber
-          
-          # Manager APK (Local Modeに必須)
-          # *.apk でダウンロードし、manager.apk にリネームして保存
-          # 確実に1つのファイルにするため、findコマンド等で処理
-          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "*.apk" --output "manager_dl.apk" --clobber
-          mv manager_dl.apk manager.apk
-          
+          LATEST_LSPATCH_TAG=$(gh release list --repo "$LSPATCH_REPO" --limit 1 --json tagName --jq '.[0].tagName')
+
+          if [ -z "$LATEST_LSPATCH_TAG" ]; then
+            echo "Error: Could not find LSPatch release."
+            exit 1
+          fi
+
           echo "LSPatch version: $LATEST_LSPATCH_TAG"
+
+          # --- .jar ダウンロード ---
+          # 複数ヒットに備えて1ファイルだけ選択してダウンロード
+          JAR_FILE=$(gh release view "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --json assets \
+            --jq '.assets[].name | select(endswith(".jar"))' | head -n 1)
+
+          if [ -z "$JAR_FILE" ]; then
+            echo "Error: No .jar asset found in LSPatch release."
+            exit 1
+          fi
+
+          echo "Selected jar: $JAR_FILE"
+          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "$JAR_FILE" --output "lspatch.jar" --clobber
+
+          # --- Manager APK ダウンロード ---
+          # .apk が複数ある場合に備え、"manager" を含むファイルを優先して1つだけ選択
+          APK_LIST=$(gh release view "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --json assets \
+            --jq '.assets[].name | select(endswith(".apk"))')
+
+          MANAGER_FILE=$(echo "$APK_LIST" | grep -i "manager" | head -n 1)
+
+          if [ -z "$MANAGER_FILE" ]; then
+            echo "Warning: 'manager' apk not found by name, falling back to first .apk"
+            MANAGER_FILE=$(echo "$APK_LIST" | head -n 1)
+          fi
+
+          if [ -z "$MANAGER_FILE" ]; then
+            echo "Error: No .apk asset found in LSPatch release."
+            exit 1
+          fi
+
+          echo "Selected manager apk: $MANAGER_FILE"
+          gh release download "$LATEST_LSPATCH_TAG" --repo "$LSPATCH_REPO" --pattern "$MANAGER_FILE" --output "manager.apk" --clobber
+
           ls -lh lspatch.jar manager.apk
 
       # 7. パッチ適用 (Local Mode + 注入ローダーデックス)
-      # 修正: --injectdex オプションを追加
-      # 修正: 生成されたファイルの中から Instafel だけを特定してリネーム
       - name: Apply LSPatch (Local Mode)
         if: steps.check.outputs.update_needed == 'true'
         run: |
           mkdir -p output
-          
+
           echo "Applying patch in Local Mode with Inject Loader Dex..."
-          # --injectdex: 注入ローダーデックスを有効化 (Webviewクラッシュ対策)
-          # --manager: Local Mode (Manager連携) を強制
           java -jar lspatch.jar instafel.apk --manager manager.apk --injectdex -f -o output
-          
+
           echo "Files in output directory:"
           ls -lh output/
-          
+
           # Instafelのパッチ済みファイルのみを特定してリネーム
-          # (manager-xxx.apk も生成されるため、それを除外)
           mv output/instafel-*-lspatched.apk output/instafel-patched-unsigned.apk
 
       # 8. 署名 (apksignerを直接使用)
@@ -144,12 +170,12 @@ jobs:
           BUILD_TOOLS_VERSION: "34.0.0"
         run: |
           BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
-          
+
           echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
-          
+
           echo "Running zipalign..."
           "$BUILD_TOOLS_PATH/zipalign" -v -p 4 output/instafel-patched-unsigned.apk output/instafel-aligned.apk
-          
+
           echo "Running apksigner..."
           "$BUILD_TOOLS_PATH/apksigner" sign \
             --ks release.keystore \
@@ -158,7 +184,7 @@ jobs:
             --key-pass "pass:$KEY_PASSWORD" \
             --out output/instafel-patched.apk \
             output/instafel-aligned.apk
-            
+
           rm release.keystore
 
       # 9. リリース作成
