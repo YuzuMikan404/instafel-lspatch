@@ -1,4 +1,7 @@
 # instafel-lspatch
+アーカイブしました
+もとのInstafelAPKリリースが削除されたため
+
 Instafelにlspatchのjar当てたやつ <br>
 https://github.com/mamiiblt/instafel/releases <br>
 InstaEclipseをLSPatchマネージャーでスコープできるように、そしてObtaniumで自動更新できるように作りました。 <br>
