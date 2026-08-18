@@ -1,6 +1,8 @@
 # instafel-lspatch
 アーカイブしました<br>
 もとのInstafelAPKリリースが削除されたため
+Fuku856さんのフォークリポジトリでは更新が続いています、おすすめです
+https://github.com/Fuku856/instafel-lspatch
 
 Instafelにlspatchのjar当てたやつ <br>
 https://github.com/mamiiblt/instafel/releases <br>
